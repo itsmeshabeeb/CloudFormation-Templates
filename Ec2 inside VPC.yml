@@ -1,0 +1,129 @@
+Description: This template will deploy an linux Ec2 instance in Selected Subnet and Windows Ec2 with proper security groups and it will create an Elastic ip and attach it to one of the server.
+
+
+Parameters:
+  EnvironmentName:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+    Default: EC2
+
+    #Listing all available VPCs
+  VPC:
+    Description: VPC for the Security Group
+    Type: AWS::EC2::VPC::Id
+  
+    #Listing all available KeyPairs
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: Django_keypair
+
+
+    #Listing all available Subnets
+  Subnets:
+    Description: The array of Subnet IDs for the Subnet group
+    Type: List<AWS::EC2::Subnet::Id>  
+
+    #Listing instance types from the allowed values
+  InstanceType:
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+    - t2.micro
+    - c1.medium
+    - c1.xlarge
+    - c3.2xlarge
+    - c3.4xlarge
+    - c3.8xlarge
+    - c3.large
+ 
+    #here it will ask to enter the Linux AMI Id
+  ImageIds:
+    Description: Type Linux Ami ID here
+    Type: String
+  
+    #here it will ask to enter the Linux AMI Id
+  WindowsImageId:
+    Description: Type Windows AMI id Here
+    Type: String
+
+Resources:
+#it will create a SecurityGroup with port 80 (http)
+  InstanceSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to client host
+      VpcId: !Ref VPC 
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Web Security Group
+  
+#it will create a SecurityGroup with port 3389 (RDP)
+  WindowsSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Used for Connecting Windows Instance using RDP protocol
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3389
+          ToPort: 3389
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} windows SG
+
+#here it will create a instance from the AMI ID
+  Ec2Resourse:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      SecurityGroupIds: 
+        - !Ref InstanceSG
+      SubnetId: !Join [",", [!Select [0, !Ref Subnets]]]  
+      ImageId: !Ref ImageIds
+      KeyName: !Ref KeyName
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} web Ec2
+  
+    
+#here it will create a instance from the AMI ID
+  Ec2Resourse2:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      SubnetId: !Join [",", [!Select [1, !Ref Subnets]]]  
+      ImageId: !Ref ImageIds
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} App EC2
+
+
+#here it will create a instance from the windows AMI ID
+  WindowsEc2:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      SubnetId: !Join [",", [!Select [0, !Ref Subnets]]]  
+      ImageId: !Ref WindowsImageId
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Windows EC2
+      KeyName : !Ref KeyName
+      SecurityGroupIds:
+        - !Ref WindowsSG
+
+#here it will create an Elastic ip and it will atach to the Refered instance.
+  MyEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref Ec2Resourse2
