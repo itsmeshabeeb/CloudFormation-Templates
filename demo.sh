@@ -33,7 +33,7 @@ service httpd restart
 # Install MySQL
 yum -y install mysql-server
 
-# Start MySQL
+# Start MySQLdssdsdd
 service mysqld start
 
 # Create a database named blog
