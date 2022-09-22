@@ -1,0 +1,290 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: S3(clblog) Firehose S3(json) 20180513
+Parameters:
+  SourceS3Bucket:
+    Description: S3 Bucket Name (CLB accesslog)
+    Type: String
+    Default: c1-s3bucket-#####
+  OutputS3Bucket:
+    Description: S3 Bucket Name (FirehoseOutput)
+    Type: String
+    Default: c1-s3bucket-#####
+
+Resources:
+
+  Step1SnsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Id: MyTopicPolicy
+        Statement:
+          - Sid: allow-publish-s3
+            Effect: Allow
+            Principal:
+              Service:
+                - s3.amazonaws.com
+            Action:
+              - sns:Publish
+            Resource: !Ref 'Step1SnsTopic'
+      Topics:
+        - !Ref 'Step1SnsTopic'
+
+  Step1SnsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: s3-trigger-elb-output
+      Subscription:
+        - Endpoint: !GetAtt 'Step2LambdaFunction.Arn'
+          Protocol: lambda
+
+  Step2LambdaLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref 'Step2LambdaFunction'
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref 'Step1SnsTopic'
+
+  Step2LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Step2LambdaFunction}'
+      RetentionInDays: 14
+
+  Step2LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub 'arn:aws:s3:::${SourceS3Bucket}/*'
+              - Effect: Allow
+                Action:
+                  - firehose:PutRecordBatch
+                Resource: !GetAtt 'Step3deliverystream.Arn'
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt [Step2SqsDeadLetterQueue, Arn]
+
+  Step2LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt 'Step2LambdaRole.Arn'
+      DeadLetterConfig: 
+        TargetArn: !GetAtt [Step2SqsDeadLetterQueue, Arn]
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import json
+          import os
+          import urllib.parse
+          import gzip
+          from datetime import datetime
+          import base64
+          import re
+
+          s3 = boto3.client('s3')
+          firehose = boto3.client('firehose')
+
+          def lambda_handler(event, context):
+            a = parse_s3_event(event)
+            bucket_name = a['bucket_name']
+            key = a['key']
+
+            # Process CLB log (.log)
+            if (re.match('.*.log$', key)):
+              response =s3.get_object(Bucket=bucket_name, Key=key)
+              body = response['Body'].read().decode('utf-8').splitlines()
+              if len(body) > 0:
+                process_log(body)
+        
+          def parse_s3_event(event):
+            a = json.loads(event['Records'][0]['Sns']['Message'])
+            z = {}
+            z['bucket_name'] = a['Records'][0]['s3']['bucket']['name']
+            z['key'] = urllib.parse.unquote_plus(a['Records'][0]['s3']['object']['key'], encoding='utf-8')
+            return z
+
+          def process_log(data):
+            i = 0
+            c = []
+            for a in data:
+              b = parse_log(a)
+              if b is not None:
+                c.append({'Data': b})
+                i = i + 1
+              if i == 100:
+                PutRecordBatchFirehose(c)
+                i = 0
+                c = []
+            if len(c) > 0:
+              PutRecordBatchFirehose(c)
+
+          def parse_log(line):
+            z = {}
+            a = line.split('"')
+            b = a[0].split(' ')
+
+            # CLB Log
+            if len(b) == 12:
+              if (re.match('[0-9]...-[0-9].-[0-9].T[0-9].:[0-9].:[0-9].\.[[0-9]*Z' , b[0])):
+                z = parse_clb_log(a)
+
+            #Column check (number)
+            if len(z) > 10:
+              print(z)
+              return json.dumps(z) + "\n"
+
+          def parse_clb_log(a):
+            z = {}
+            b = a[0].split(' ')
+            # CLB Log
+            z["timestamp"] = b[0]
+            z["elb"] = b[1]
+            if len(b[2].split(':')) > 1:
+              z["client"] =  b[2].split(':')[0]
+              z["client_port"] = b[2].split(':')[1]
+            if len(b[3].split(':')) > 1:
+              z["backend"] =  b[3].split(':')[0]
+              z["backend_port"] = b[3].split(':')[1]
+            z["request_processing_time"] = float(b[4])
+            z["backend_processing_time"] = float(b[5])
+            z["response_processing_time"] = float(b[6])
+            z["elb_status_code"] = b[7]
+            z["backend_status_code"] = b[8]
+            z["received_bytes"] = float(b[9])
+            z["sent_bytes"] = float(b[10])
+            z["request"] = a[1]
+            z["user_agent"] = a[3]
+            c = a[4].split(' ')
+            if len(c) == 2:
+              z["ssl_cipher"] = c[1]
+              z["ssl_protocol"] = c[2]
+            if len(b[3].split(':')) > 1:
+              z["client_port"] = b[3].split(':')[1]
+              z["client_port"] = b[3].split(':')[1]
+            if len(z["request"].split(' ')) > 2:
+              z["request_method"] = z["request"].split(' ')[0]
+              z["request_uri"] = z["request"].split(' ')[1]
+              z["request_http_version"] = z["request"].split(' ')[2]
+              if z["request_method"] != '-' :
+                e = urllib.parse.urlparse(z["request_uri"])
+                z["request_uri_scheme"] = e.scheme
+                z["request_uri_user"] = e.username
+                z["request_uri_host"] = e.hostname
+                z["request_uri_port"] = e.port
+                z["request_uri_path"] = e.path
+                z["request_uri_query"] = e.query
+                z["request_uri_fragment"] = e.fragment
+            return z
+
+          def PutRecordBatchFirehose(data):
+            firehose_stream_name = os.environ['firehose_stream_name']
+            r = firehose.put_record_batch(
+              DeliveryStreamName = firehose_stream_name,
+              Records = data
+            )
+
+            print(str(r["ResponseMetadata"]["HTTPHeaders"]))
+
+      Runtime: python3.6
+      MemorySize: 128
+      Timeout: 300
+      Description: ELB log S3(events) to firehose
+      Environment:
+        Variables:
+          firehose_stream_name: !Ref 'Step3deliverystream'
+      Tags:
+        - Key: CloudformationArn
+          Value: !Ref 'AWS::StackId'
+
+  Step2SqsDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+
+  Step3deliverystream:
+    DependsOn:
+      - Step3deliveryPolicy
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !Sub 'arn:aws:s3:::${OutputS3Bucket}'
+        BufferingHints:
+          IntervalInSeconds: '300'
+          SizeInMBs: '50'
+        CompressionFormat: GZIP
+        Prefix: firehose/clb_logs/
+        RoleARN: !GetAtt 'Step3deliveryRole.Arn'
+        ProcessingConfiguration:
+          Enabled: 'false'
+
+  Step3deliveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref 'AWS::AccountId'
+
+  Step3deliveryPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: firehose_delivery_policy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:AbortMultipartUpload
+              - s3:GetBucketLocation
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:ListBucketMultipartUploads
+              - s3:PutObject
+            Resource:
+              - !Sub 'arn:aws:s3:::${OutputS3Bucket}'
+              - !Sub 'arn:aws:s3:::${OutputS3Bucket}*'
+      Roles:
+        - !Ref 'Step3deliveryRole'
+
+  Step3LogGroupFirehose:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/firehose/${Step3deliverystream}'
+      RetentionInDays: 7

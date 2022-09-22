@@ -1,0 +1,665 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: archive-cloudwatch-metrics-to-s3 (pitagora-lambda)
+Parameters:
+  ListNammespaces:
+    Description: Target cloudwatch namespace
+    Type: String
+    Default: AWS/Route53,AWS/ApplicationELB,AWS/ELB/AWS/S3,AWS/Lambda,AWS/DynamoDB,AWS/WAF,AWS/CloudFront
+Resources:
+  Step1ScheduledRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: ScheduledRule
+      ScheduleExpression: cron(2 0 * * ? *)
+      State: ENABLED
+      Targets:
+      - Arn: !GetAtt 'Step2LambdaFunction.Arn'
+        Id: Step2LambdaFunction
+  Step2LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref 'Step2LambdaFunction'
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt 'Step1ScheduledRule.Arn'
+  Step2LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join ['', [/aws/lambda/, !Ref 'Step2LambdaFunction']]
+      RetentionInDays: 14
+  Step2LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - dynamodb:PutItem
+            Resource: !GetAtt 'Step3DynamodbTable.Arn'
+          - Effect: Allow
+            Action:
+            - CloudWatch:ListMetrics
+            Resource: '*'
+
+  Step2LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt Step2LambdaRole.Arn
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import json
+          import os
+          import datetime
+          import time
+
+          from boto3.dynamodb.conditions import Key, Attr
+          dynamodb = boto3.resource('dynamodb')
+          table    = dynamodb.Table(os.environ['dynamodbtablename'])
+          listnamespaces    = os.environ['listnamespaces'].split(",")
+          
+          def lambda_handler(event, context):            
+            targetdatedelta = 0
+            startdate = (datetime.date.today() - datetime.timedelta(days=targetdatedelta)).strftime('%Y-%m-%d')
+
+            for namespace in listnamespaces:
+              put_item(namespace,startdate)  
+
+          def put_item(namespace,startdate):            
+            currenttime = datetime.datetime.now().isoformat()
+            ttl = int(time.time() + (86400 * 10))
+            r= table.put_item(
+              Item={
+                "namespace": namespace,
+                "startdate": startdate,
+                "currenttime": currenttime,
+                "ttl" : ttl
+              }
+            )
+      Runtime: python3.6
+      MemorySize: 128
+      Timeout: 180
+      Description: 'Cloudwatch to S3 (DynamoDB producer)'
+      Environment:
+        Variables:
+          'dynamodbtablename': !Ref 'Step3DynamodbTable'
+          'listnamespaces': !Ref 'ListNammespaces'
+      Tags:
+      - Key: CloudformationArn
+        Value: !Ref 'AWS::StackId'
+
+  Step3DynamodbTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+      - AttributeName: namespace
+        AttributeType: S
+      - AttributeName: startdate
+        AttributeType: S
+      KeySchema:
+      - AttributeName: namespace
+        KeyType: HASH
+      - AttributeName: startdate
+        KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: '1'
+        WriteCapacityUnits: '1'
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
+      Tags:
+      - Key: step
+        Value: Step3Dynamodb
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  Step4EventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt 'Step3DynamodbTable.StreamArn'
+      FunctionName: !Ref 'Step4LambdaFunction'
+      StartingPosition: LATEST
+      BatchSize: 1
+  Step4LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join ['', [/aws/lambda/, !Ref 'Step4LambdaFunction']]
+      RetentionInDays: 14
+  Step4LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - dynamodb:*
+            Resource: !GetAtt 'Step3DynamodbTable.StreamArn'
+          - Effect: Allow
+            Action:
+            - CloudWatch:ListMetrics
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - s3:PutObject
+            Resource: !Join ['', [!GetAtt 'Step5S3Bucket.Arn', /*]]
+
+  Step4LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt Step4LambdaRole.Arn
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import boto3
+          import json
+          import os
+          import datetime
+
+          cloudwatch = boto3.client('cloudwatch')
+          s3_client = boto3.client('s3')
+
+          def lambda_handler(event, context):
+
+            for a in event['Records']:
+              b = {}
+              b["namespace"] = json.dumps(a['dynamodb']['NewImage']['namespace']['S'])
+              b["startdate"] = json.dumps(a['dynamodb']['NewImage']['startdate']['S'])
+              b["currenttime"] = json.dumps(a['dynamodb']['NewImage']['currenttime']['S'])
+              list_metrics(b)
+
+          def list_metrics(b):
+
+            n=1
+            c = cloudwatch.list_metrics(Namespace=b["namespace"])
+            build_json(c,b["startdate"],n)
+
+            while(c.get('NextToken') is not None):
+              n += 1
+              nexttoken=c['NextToken']
+              c = cloudwatch.list_metrics(Namespace=namespace,NextToken=nexttoken)
+              build_json(c,b["startdate"])
+
+          def build_json(c,startdate,n):
+
+            f = []
+            for d in c['Metrics']:
+
+              e = {}
+              e["Namespace"] = d['Namespace']
+              e["MetricName"] = d['MetricName']
+              e["Dimensions"] = d['Dimensions']
+              e["startdate"] = startdate
+
+              f.append(json.dumps(e))
+
+            # S3バケット(環境変数より)
+            s3_bucket = os.environ['s3_bucket']
+            # S3 キー生成
+            s3_key = datetime.datetime.now().strftime('%Y/%m/%d/%H-%M-%S-%f') + '-' + str(n) + '-step6.jsonl'
+
+            # minify形式(JSONL)のJSONファイル(レコード区切りを改行)を出力
+            with open("/tmp/jsonl", "w", encoding="utf-8") as a:
+              a.write("\n".join(f))
+
+            # S3 アップロード
+            s3_client.upload_file('/tmp/jsonl', s3_bucket , s3_key)
+
+      Runtime: python3.6
+      MemorySize: 256
+      Timeout: 300
+      Description: 'Cloudwatch to S3 (DynamoDB consumer)'
+      Environment:
+        Variables:
+          's3_bucket': !Ref 'Step5S3Bucket'
+
+      Tags:
+      - Key: CloudformationArn
+        Value: !Ref 'AWS::StackId'
+
+  Step5S3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Join ['', [!Ref 'AWS::StackName', '-step5-', !Ref 'AWS::Region', '-',
+          !Ref 'AWS::AccountId']]
+      LifecycleConfiguration:
+        Rules:
+        - Id: AutoDelete
+          Status: Enabled
+          ExpirationInDays: '7'
+      NotificationConfiguration:
+        LambdaConfigurations:
+        - Function: !GetAtt 'Step6LambdaFunction.Arn'
+          Event: s3:ObjectCreated:*
+          Filter:
+            S3Key:
+              Rules:
+              - Name: suffix
+                Value: jsonl
+
+  Step6LambdaLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt 'Step6LambdaFunction.Arn'
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+
+  Step6LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join ['', [/aws/lambda/, !Ref 'Step6LambdaFunction']]
+      RetentionInDays: 14
+
+  Step6LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - sns:Publish
+            Resource: !Ref 'Step7SnsTopic'
+          - Effect: Allow
+            Action:
+            - s3:GetObject
+            Resource: !Join ['', ['arn:aws:s3:::', !Ref 'AWS::StackName', '-*']]
+
+  Step6LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt Step6LambdaRole.Arn
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import json
+          import os
+          import urllib.parse
+
+          s3 = boto3.client('s3')
+
+          def lambda_handler(event, context):
+            bucket_name = event['Records'][0]['s3']['bucket']['name']
+            key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8')
+
+            print ('bucket_name: ' + bucket_name)
+            print ('bucket_name: ' + key)
+
+            response = s3.get_object(Bucket=bucket_name, Key=key)
+
+            a = response['Body'].read().decode('utf-8')
+  
+            for b in a.split('\n'):
+                c = json.loads(b)
+                d = {}
+                d["Namespace"] = c['Namespace']
+                d["MetricName"] = c['MetricName']
+                d["Dimensions"] = c['Dimensions']
+                d["startdate"] = json.loads(c['startdate'])
+                body = json.dumps(d)
+                r = send_to_sns(body)
+
+          def send_to_sns(body):
+              topic=os.environ['SnsTopicArn']
+              sns = boto3.client('sns')
+              sns.publish(
+                  TopicArn = topic,
+                  Subject = 'subject',
+                  Message = body
+              )   
+
+      Runtime: python3.6
+      MemorySize: 128
+      Timeout: 300
+      Description: 'Cloudwatch to S3 (S3 events)'
+      Environment:
+        Variables:
+          'SnsTopicArn': !Ref 'Step7SnsTopic'
+      Tags:
+      - Key: CloudformationArn
+        Value: !Ref 'AWS::StackId'
+
+  Step7SnsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: trigger-consumer
+      Subscription:
+      - Endpoint: !GetAtt [Step8SqsQueue, Arn]
+        Protocol: sqs
+  Step8SqsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt [Step8SqsDeadLetterQueue, Arn]
+        maxReceiveCount: 10
+  Step8SqsDeadLetterQueue:
+    Type: AWS::SQS::Queue
+  Step8SqsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Id: MyQueuePolicy
+        Statement:
+        - Sid: Allow-SendMessage-To-Both-Queues-From-SNS-Topic
+          Effect: Allow
+          Principal: '*'
+          Action:
+          - sqs:SendMessage
+          Resource: '*'
+          Condition:
+            ArnEquals:
+              aws:SourceArn: !Ref 'Step7SnsTopic'
+      Queues:
+      - !Ref 'Step8SqsQueue'
+
+  Step9ScheduledRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: ScheduledRule
+      ScheduleExpression: cron(16 0 * * ? *)
+      State: ENABLED
+      Targets:
+      - Arn: !Ref 'Step10SnsTopic'
+        Id: Step10SnsTopic
+
+  Step10SnsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: trigger-sqs-worker
+      Subscription:
+      - Endpoint: !GetAtt 'Step11LambdaFunction.Arn'
+        Protocol: lambda
+  Step10SnsPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Id: MyTopicPolicy
+        Statement:
+        - Sid: My-statement-id
+          Effect: Allow
+          Principal:
+            Service:
+            - events.amazonaws.com
+          Action:
+          - sns:Publish
+          Resource: !Ref 'Step10SnsTopic'
+      Topics:
+      - !Ref 'Step10SnsTopic'
+
+  Step11LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref 'Step11LambdaFunction'
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref 'Step10SnsTopic'
+  Step11LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join ['', [/aws/lambda/, !Ref 'Step11LambdaFunction']]
+      RetentionInDays: 14
+  Step11LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - s3:PutObject
+            Resource: !Join ['', [!GetAtt 'Step12S3Bucket.Arn', /*]]
+          - Effect: Allow
+            Action:
+            - sqs:DeleteMessage
+            - sqs:ReceiveMessage
+            - sqs:GetQueueUrl
+            Resource: !GetAtt 'Step8SqsQueue.Arn'
+          - Effect: Allow
+            Action:
+            - lambda:InvokeFunction
+            Resource: !Join ['', ['arn:aws:lambda:', !Ref 'AWS::Region', ':', !Ref 'AWS::AccountId',
+                ':function:', !Ref 'AWS::StackName', -*]]
+          - Effect: Allow
+            Action:
+            - CloudWatch:GetMetricData
+            - CloudWatch:GetMetricStatistics
+            Resource: '*'
+
+  Step11LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt Step11LambdaRole.Arn
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import datetime
+          import json
+          import gzip
+          import shutil
+          import os
+          import time
+          
+          def lambda_handler(event, context):
+            function_starttime = int(time.time())
+            queueurl = os.environ['sqs_queueurl']
+            elapsedtime = int(time.time()) - function_starttime
+
+            # SQSキュー処理実行
+            exe_count = 0
+            while(elapsedtime < 240):
+              r = receive_sqs_message(queueurl)
+              if ( r < 0 ):
+                break
+              if ( r == 0 ):
+                exe_count += 1
+
+              elapsedtime =   int(time.time()) - function_starttime
+
+            # 4分超過時、タイムアウト対策のため再帰呼び出し
+            if (elapsedtime >= 240):
+              if (exe_count >= 1):
+                invoke_takeover(context.invoked_function_arn)
+
+          def invoke_takeover(lambda_arn):
+
+            # 非同期(Event)呼び出し
+            r = boto3.client('lambda').invoke(
+                FunctionName = lambda_arn,
+                InvocationType = 'Event'
+            )
+            print('r:'+ str(r))
+
+          def receive_sqs_message(queueurl):
+
+            sqs = boto3.client('sqs')
+            a = sqs.receive_message(QueueUrl=queueurl)        
+            if (a.get('Messages') is None):
+              return -1
+
+            receipthandle = a['Messages'][0]['ReceiptHandle']
+            b = json.loads(a['Messages'][0]['Body'])
+            msg = json.loads(b['Message'])
+              
+            exec_message(msg)
+            c = sqs.delete_message(QueueUrl=queueurl, ReceiptHandle=receipthandle)        
+            return 0
+
+          def exec_message(msg):
+
+            namespace = msg['Namespace']
+            metricname = msg['MetricName']
+            dimensions = msg['Dimensions']
+            startdate = json.loads(msg['startdate'])
+
+            # S3バケット(環境変数より)
+            s3_bucket = os.environ['s3_bucket']
+
+            # S3 キー生成
+            starttime = datetime.datetime.strptime(startdate,'%Y-%m-%d')
+            startyear=starttime.strftime('%Y')
+            startmonth=starttime.strftime('%m')
+            startday=starttime.strftime('%d')
+            # dimensions はソート後、Valueのみ利用
+            b = [namespace,metricname]
+            for a in sorted(dimensions, key=lambda x:x['Name'] ):
+              b.append(a['Value'])
+            b.append(startyear)
+            b.append(startmonth)
+            b.append(startday + '-jsonl.gz')
+            s3_key ="/".join(b)
+
+            # cloudwatchメトリックデータ取得
+            r = get_cloudwatch_metric(namespace, metricname, dimensions,starttime)
+            # S3 転送
+            upload_json_s3(r, s3_bucket, s3_key)
+
+          def get_cloudwatch_metric(namespace, metricname, dimensions, starttime):
+              
+            endtime = starttime + datetime.timedelta(days=1)
+              
+            # get_metric_statistics
+            cloudwatch = boto3.client('cloudwatch')
+            a = cloudwatch.get_metric_statistics(
+               Namespace=namespace,
+               MetricName=metricname,
+               Dimensions=dimensions,
+               StartTime=starttime,
+               EndTime=endtime,
+               Period=60,
+               Statistics=['SampleCount','Average','Sum','Minimum','Maximum',]
+               )
+            # 日時(Timestamp)でソート
+            b = sorted(a["Datapoints"], key=lambda x:x['Timestamp'] )
+            # 日時別レコード生成
+            e = []
+            for c in b:
+               d = {
+                  "Timestamp" : c.get('Timestamp').strftime('%Y-%m-%dT%H:%M:%SZ') ,
+                  "SampleCount" : c.get('SampleCount') ,
+                  "Average" : c.get('Average') ,
+                  "Sum" : c.get('Sum') ,
+                  "Minimum" : c.get('Minimum') ,
+                  "Maximum" : c.get('Maximum') 
+               }
+               e.append(json.dumps(d))
+            return e
+
+          def upload_json_s3(data, s3_bucket , s3_key):
+            # minify形式(JSONL)のJSONファイル(レコード区切りを改行)を出力
+            with open("/tmp/jsonl", "w", encoding="utf-8") as a:
+              a.write("\n".join(data))
+            # GZIP圧縮
+            with open('/tmp/jsonl', 'rb') as b:
+              with gzip.open('/tmp/jsonl.gz', 'wb', compresslevel=9) as c:
+                shutil.copyfileobj(b, c)
+            # S3 アップロード
+            s3_client = boto3.client('s3')
+            s3_client.upload_file('/tmp/jsonl.gz', s3_bucket , s3_key )
+
+
+      Runtime: python3.6
+      MemorySize: 128
+      Timeout: 300
+      Description: 'Cloudwatch to S3  (SQS worker)'
+      Environment:
+        Variables:
+          's3_bucket': !Ref 'Step12S3Bucket'
+          'sqs_queueurl': !Ref 'Step8SqsQueue'
+      Tags:
+      - Key: CloudformationArn
+        Value: !Ref 'AWS::StackId'
+        
+  Step12S3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Join ['', [!Ref 'AWS::StackName', '-', !Ref 'AWS::Region', '-',
+          !Ref 'AWS::AccountId']]
+      LifecycleConfiguration:
+        Rules:
+        - Id: AutoDelete
+          Status: Enabled
+          ExpirationInDays: '456'
+
+

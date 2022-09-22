@@ -1,0 +1,121 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudwatchLogs to Firehose_S3_lambda_S3 (2018-5-27)
+Parameters:
+  CWlogsExpiredate:
+    Description: Number of days to keep Cloudwatch logs
+    Type: String
+    Default: 3
+  Step4S3Expiredate:
+    Description: Number of days to keep S3 file 
+    Type: String
+    Default: 10
+  FirehosePrefix:
+    Description: Firehose output S3 prefix
+    Type: String
+    Default: 'firehose/cwlogs_firehose/'
+
+Resources:
+  Step1LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/cw_logs/${AWS::StackName}'
+      RetentionInDays: !Ref 'CWlogsExpiredate'
+
+  Step2SubscriptionFilter:
+    Type: AWS::Logs::SubscriptionFilter
+    Properties: 
+      DestinationArn: !GetAtt 'Step3deliverystream.Arn'
+      FilterPattern: ''
+      LogGroupName: !Ref 'Step1LogGroup'
+      RoleArn: !GetAtt 'Step2LogsRole.Arn'
+
+  Step2LogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - firehose:PutRecord
+                  - firehose:PutRecords
+                Resource: !GetAtt 'Step3deliverystream.Arn'
+
+  Step3deliveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref 'AWS::AccountId'
+
+  Step3deliveryPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: firehose_delivery_policy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:AbortMultipartUpload
+              - s3:GetBucketLocation
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:ListBucketMultipartUploads
+              - s3:PutObject
+            Resource:
+              - !Sub 'arn:aws:s3:::${Step4S3bucket}'
+              - !Sub 'arn:aws:s3:::${Step4S3bucket}*'
+      Roles:
+        - !Ref 'Step3deliveryRole'
+
+  Step3LogGroupFirehose:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/firehose/${Step3deliverystream}'
+      RetentionInDays: 7
+
+  Step3deliverystream:
+    DependsOn:
+      - Step3deliveryPolicy
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !Sub 'arn:aws:s3:::${Step4S3bucket}'
+        BufferingHints:
+          IntervalInSeconds: '60'
+          SizeInMBs: '50'
+        CompressionFormat: UNCOMPRESSED
+        Prefix: !Sub '${FirehosePrefix}${AWS::StackName}/'
+        RoleARN: !GetAtt 'Step3deliveryRole.Arn'
+        ProcessingConfiguration:
+          Enabled: 'false'
+
+  Step4S3bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: !Ref 'Step4S3Expiredate'
