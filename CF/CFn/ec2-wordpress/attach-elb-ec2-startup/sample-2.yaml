@@ -25,7 +25,7 @@ Parameters:
 
 Resources:
   Ec2LaunchTemplate:
-    Type: AWS::EC2::LaunchTemplate
+    Type: AWS::EC2::LaunchTemplat
     Properties:
       LaunchTemplateName: !Sub '${AWS::StackName}-LaunchTemplate'
       LaunchTemplateData:

@@ -1,0 +1,9 @@
+installing wordpress in Amzn Linux 2:
+
+for installing wordpress in ec2, first we need to install.
+
+1.web server (apache or Nginx)
+2.Php
+3.DB mysql or mariaDB
+
+
