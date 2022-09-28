@@ -6,11 +6,13 @@
 # Downloaded from https://www.devbhusal.com/wordpress.aws.sh
 
 #Change these values and keep in safe place
-db_root_password=PassWord4-root
-db_username=wordpress_user
-db_user_password=PassWord4-user
+db_root_password=Kinglier@9633
+db_username=shabeeb
+db_user_password=Shabeeb@123
 db_name=wordpress_db
 
+#giving sudo permission:
+sudo -i
 # install LAMP Server
 yum update -y
 #install apache server
@@ -24,20 +26,25 @@ yum clean metadata
 yum install -y php php-{pear,cgi,common,curl,mbstring,gd,mysqlnd,gettext,bcmath,json,xml,fpm,intl,zip,imap,devel}
 #install imagick extension
 yum -y install gcc ImageMagick ImageMagick-devel ImageMagick-perl
-pecl install imagick
+printf "\n" | pecl install imagick
 chmod 755 /usr/lib64/php/modules/imagick.so
-cat <<EOF >>/etc/php.d/20-imagick.ini
+cat <<EOF >>/etc/php.d/php.ini
 
 extension=imagick
 
 EOF
 
+echo "its done"
+
 systemctl restart php-fpm.service
+echo "php restarted"
+
+
 
 
 #and download mysql package to yum  and install mysql server from yum
 yum install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
-yum localinstall -y https://dev.mysql.com/get/mysql57-community-release-el7-11.noarch.rpm
+yum install -y https://dev.mysql.com/get/mysql80-community-release-el7-5.noarch.rpm
 yum install -y mysql-community-server
 
 
@@ -58,19 +65,25 @@ cp -r wordpress/* /var/www/html/
 
 # AUTOMATIC mysql_secure_installation
 # change permission of error log file to extract initial root password 
-chown  ec2-user:apache /var/log/mysqld.log
+chown ec2-user:apache /var/log/mysqld.log
 temppassword=$(grep 'temporary password' /var/log/mysqld.log | grep -o ".\{12\}$")
 #and change back to mysql 
-chown  mysql:mysql /var/log/mysqld.log
+chown mysql:mysql /var/log/mysqld.log
+
+
 
 #change root password to db_root_password
- mysql -p$temppassword --connect-expired-password  -e "SET PASSWORD FOR root@localhost = PASSWORD('$db_root_password');FLUSH PRIVILEGES;" 
-mysql -p'$db_root_password'  -e "DELETE FROM mysql.user WHERE User='';"
-mysql -p'$db_root_password' -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');"
+mysql -p$temppassword --connect-expired-password  -e "SET PASSWORD FOR root@localhost ='$db_root_password';FLUSH PRIVILEGES;"
+echo "first sql command is worked"
+mysql -p$db_root_password -e "DELETE FROM mysql.user WHERE User='';"
+echo "Second sql command is worked"
+mysql -p$db_root_password -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');"
+echo "Third sql command is worked"
+
 
 
 # Create database user and grant privileges
-mysql -u root -p"$db_root_password" -e "GRANT ALL PRIVILEGES ON *.* TO '$db_username'@'localhost' IDENTIFIED BY '$db_user_password';FLUSH PRIVILEGES;"
+mysql -p$dbpassword -e "GRANT ALL PRIVILEGES ON *.* TO 'shabeeb'@'localhost' IDENTIFIED BY 'Shabeeb@123';FLUSH PRIVILEGES;"
 
 # Create database
 mysql -u $db_username -p"$db_user_password" -e "CREATE DATABASE $db_name;"
