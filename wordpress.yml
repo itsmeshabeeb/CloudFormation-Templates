@@ -7,6 +7,9 @@ Description: >-
   **WARNING** This template creates an Amazon EC2 instance. You will be billed
   for the AWS resources used if you create a stack from this template.
 Parameters:
+  HostedZoneId:
+    Type: String
+    Default: Z01189411RKVU08RQO7JB
   Subnetids2: 
     Type: AWS::EC2::Subnet::Id
   
@@ -92,6 +95,10 @@ Resources:
                   FromPort: 80
                   ToPort: 80
                   CidrIp: 0.0.0.0/0
+                - IpProtocol: tcp
+                  FromPort: 443
+                  ToPort: 443
+                  CidrIp: 0.0.0.0/0
   #EC2 Security group
   EC2SecurityGroup:
     Type: 'AWS::EC2::SecurityGroup'
@@ -104,6 +111,11 @@ Resources:
         - IpProtocol: tcp
           FromPort: '80'
           ToPort: '80'
+          SourceSecurityGroupId:
+            Ref: ELBSecurityGroup
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
           SourceSecurityGroupId:
             Ref: ELBSecurityGroup
         - IpProtocol: tcp
@@ -357,6 +369,15 @@ Resources:
         - !Ref Subnetids2
       SecurityGroups:
         - Ref: ELBSecurityGroup
+  #Generating SSL certificcate and attach it to route 53
+  # MyCertificate: 
+  #   Type: "AWS::CertificateManager::Certificate"
+  #   Properties: 
+  #     DomainName: shabeeb.ml
+  #     ValidationMethod: DNS
+  #     DomainValidationOptions:
+  #       - DomainName: shabeeb.ml
+  #         HostedZoneId: !Ref HostedZoneId
 Outputs:
   ALBHostName:
     Description: 'Application Load Balancer Hostname'
@@ -373,3 +394,4 @@ Outputs:
           - PublicDnsName
         - /wordpress
     Description: WordPress Website
+  
