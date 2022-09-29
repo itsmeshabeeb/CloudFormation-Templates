@@ -1,0 +1,39 @@
+Parameters:
+  DNSName:
+    Description: ParameterDescription
+    Type: String
+    Default: test.abc
+  ALBHostedzoneid:
+    Type: String
+    Default: ZP97RAFLXTNZK
+  hostedZoneIds:
+    Description: enter your hostzone id here
+    Type: AWS::Route53::HostedZone::Id
+
+Resources:    
+  HostedZone: 
+    Type: "AWS::Route53::HostedZone"
+    Properties: 
+      HostedZoneConfig: 
+        Comment: 'My hosted zone for example.com'
+      Name: !Ref DNSName
+  SSLCertificate: 
+    Type: "AWS::CertificateManager::Certificate"
+    Properties: 
+      DomainName: !Ref DNSName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref DNSName
+          HostedZoneId: !GetAtt HostedZone.Id
+  LoadBalancerAlias:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      # HostedZoneName: shabeeb.ml
+      HostedZoneId: !GetAtt HostedZone.Id
+      Comment: Zone apex alias targeted to myELB LoadBalancer.
+      RecordSets:
+      - Name: shabeeb.ml
+        Type: A
+        AliasTarget:
+          HostedZoneId: !Ref ALBHostedzoneid
+          DNSName: !Ref ALBDNSName

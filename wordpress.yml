@@ -7,9 +7,6 @@ Description: >-
   **WARNING** This template creates an Amazon EC2 instance. You will be billed
   for the AWS resources used if you create a stack from this template.
 Parameters:
-  HostedZoneId:
-    Type: String
-    Default: Z01189411RKVU08RQO7JB
   Subnetids2: 
     Type: AWS::EC2::Subnet::Id
   

@@ -17,11 +17,9 @@ systemctl start mariadb
 
 systemctl enable mariadb.service
 
-
 amazon-linux-extras install php7.3
 
 systemctl restart httpd.service
-
 
 nano /var/www/html/farhan.php
 
