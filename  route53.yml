@@ -1,34 +1,34 @@
 Parameters:
-  DNSName:
-    Description: ParameterDescription
+  EC2TargetGroupArn:
+    Description: Enter your Target group ARN here
     Type: String
-    Default: test.abc
+  LoadBalancerArn:
+    Description: addd your Load Balancer ARN here
+    Type: String
+  DNSName:
+    Description: Give your Hosted Zone Name Here
+    Type: String
+    Default: shabeeb.ml
   ALBHostedzoneid:
     Type: String
     Default: ZP97RAFLXTNZK
-  hostedZoneIds:
-    Description: enter your hostzone id here
-    Type: AWS::Route53::HostedZone::Id
+  ALBDNSName:
+    Description: Enter the ALB DNS same Here 
+    Type: String
+  # hostedZoneIds:
+  #   Description: enter your hostzone id here
+  #   Type: AWS::Route53::HostedZone::Id
 
 Resources:    
   HostedZone: 
     Type: "AWS::Route53::HostedZone"
     Properties: 
       HostedZoneConfig: 
-        Comment: 'My hosted zone for example.com'
+        Comment: 'My hosted zone for shabeeb.ml'
       Name: !Ref DNSName
-  SSLCertificate: 
-    Type: "AWS::CertificateManager::Certificate"
-    Properties: 
-      DomainName: !Ref DNSName
-      ValidationMethod: DNS
-      DomainValidationOptions:
-        - DomainName: !Ref DNSName
-          HostedZoneId: !GetAtt HostedZone.Id
   LoadBalancerAlias:
     Type: AWS::Route53::RecordSetGroup
     Properties:
-      # HostedZoneName: shabeeb.ml
       HostedZoneId: !GetAtt HostedZone.Id
       Comment: Zone apex alias targeted to myELB LoadBalancer.
       RecordSets:
@@ -37,3 +37,41 @@ Resources:
         AliasTarget:
           HostedZoneId: !Ref ALBHostedzoneid
           DNSName: !Ref ALBDNSName
+  #generate SSL certificate from ASM
+  SSLCertificate: 
+    Type: "AWS::CertificateManager::Certificate"
+    Properties: 
+      DomainName: !Ref DNSName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref DNSName
+          HostedZoneId: !GetAtt HostedZone.Id
+    #creating Listner for load balancer on port 443
+  HTTPSlistener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref EC2TargetGroupArn
+      LoadBalancerArn: !Ref LoadBalancerArn
+      Port: '443'
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref SSLCertificate
+#forwarding http to https
+  HTTPlistener:
+    Type: "AWS::ElasticLoadBalancingV2::Listener"
+    Properties:
+      DefaultActions:
+        - Type: "redirect"
+          RedirectConfig:
+            Protocol: "HTTPS"
+            Port: 443
+            Host: "#{host}"
+            Path: "/#{path}"
+            Query: "#{query}"
+            StatusCode: "HTTP_301"
+      LoadBalancerArn: !Ref LoadBalancerArn
+      Port: 80
+      Protocol: "HTTP"
+

@@ -1,0 +1,48 @@
+Parameters:
+  ALBDNSName:
+    Description: Enter the ALB DNS same Here 
+    Type: String
+  DNSName:
+    Description: Enter your Domain Name Here
+    Type: String
+    Default: shabeeb.ml
+Resources:
+  SSLCertificate: 
+    Type: "AWS::CertificateManager::Certificate"
+    Properties: 
+      DomainName: !Ref DNSName
+      ValidationMethod: DNS
+
+# CLOUDFRONT DISTRIBUTION
+  CloudFrontDistribution:
+    Type: 'AWS::CloudFront::Distribution'
+    Properties:
+      DistributionConfig:
+        Origins:
+          - DomainName: !ALBDNSName 'ALBDNSName'
+            Id: !Ref 'OriginALB'
+            CustomOriginConfig:
+              HTTPPort: '80'
+              HTTPSPort: '443'
+              OriginSSLProtocols:
+                - TLSv1
+                - TLSv1.1
+                - TLSv1.2
+                - SSLv3
+        Enabled: true
+        HttpVersion: 'http2'
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+            - DELETE
+            - OPTIONS
+            - PATCH
+            - POST
+            - PUT
+          TargetOriginId: !Ref 'OriginALB'
+        ViewerCertificate:
+          ACMCertificateIdentifier: !Sub 'arn:aws:acm:${AWS::Region}:${AWS::AccountId}:certificate/${ACMCertificateIdentifier}'
+          SslSupportMethod:  !Ref 'SslSupportMethod'
+          MinimumProtocolVersion: !Ref 'MinimumProtocolVersion'
+        IPV6Enabled: !Ref 'IPV6Enabled'
