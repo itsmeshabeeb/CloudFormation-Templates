@@ -1,4 +1,10 @@
 Parameters:
+  HostedZoneId:
+    Description: select your hosted zone id from here
+    Type: AWS::Route53::HostedZone::Id
+  # SSLCertificat:
+  #   Description: enter the ARN of SSL Certificate
+  #   Type: String
   ALBDNSName:
     Description: Enter the ALB DNS same Here 
     Type: String
@@ -7,31 +13,37 @@ Parameters:
     Type: String
     Default: shabeeb.ml
 Resources:
+#ssl certificate creation for cloudfront
   SSLCertificate: 
     Type: "AWS::CertificateManager::Certificate"
     Properties: 
       DomainName: !Ref DNSName
       ValidationMethod: DNS
-
-# CLOUDFRONT DISTRIBUTION
+  #CLOUDFRONT DISTRIBUTION
   CloudFrontDistribution:
     Type: 'AWS::CloudFront::Distribution'
     Properties:
       DistributionConfig:
+        Aliases:
+          - !Ref DNSName
         Origins:
-          - DomainName: !ALBDNSName 'ALBDNSName'
-            Id: !Ref 'OriginALB'
+          - DomainName: !Ref 'ALBDNSName'
+            Id: !Ref 'ALBDNSName'
             CustomOriginConfig:
               HTTPPort: '80'
               HTTPSPort: '443'
+              OriginProtocolPolicy: http-only
+              OriginKeepaliveTimeout: '5'
+              OriginReadTimeout: '30'
               OriginSSLProtocols:
-                - TLSv1
-                - TLSv1.1
                 - TLSv1.2
-                - SSLv3
         Enabled: true
         HttpVersion: 'http2'
         DefaultCacheBehavior:
+          ForwardedValues:
+              QueryString: false
+          ViewerProtocolPolicy: redirect-to-https
+          TargetOriginId: !Ref 'ALBDNSName'
           AllowedMethods:
             - GET
             - HEAD
@@ -40,9 +52,19 @@ Resources:
             - PATCH
             - POST
             - PUT
-          TargetOriginId: !Ref 'OriginALB'
+        PriceClass: 'PriceClass_All'
         ViewerCertificate:
-          ACMCertificateIdentifier: !Sub 'arn:aws:acm:${AWS::Region}:${AWS::AccountId}:certificate/${ACMCertificateIdentifier}'
-          SslSupportMethod:  !Ref 'SslSupportMethod'
-          MinimumProtocolVersion: !Ref 'MinimumProtocolVersion'
-        IPV6Enabled: !Ref 'IPV6Enabled'
+          AcmCertificateArn: !Ref 'SSLCertificate'
+          MinimumProtocolVersion: TLSv1
+          SslSupportMethod: sni-only
+  route53RSGroup:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      RecordSets: 
+      - Name: !Ref DNSName
+        Type: A
+        AliasTarget:
+          DNSName: !GetAtt CloudFrontDistribution.DomainName
+          HostedZoneId: 'Z2FDTNDATAQYW2'
+  
