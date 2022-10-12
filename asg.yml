@@ -2,16 +2,27 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: ec2-LaunchTemplate-AutoScaling
 # ec2-launchtemplate-autoscaling.yaml
 Parameters:
+  Ec2SecurityGroupSSH:
+    Description: ParameterDescription
+    Type: AWS::EC2::SecurityGroup::Id
+    Default: select the security group for the Ec2s
+  myALBTGArn:
+    Description: Enter the ALB Targetgroup ARN here
+    Type: String
+    Default: arn:aws:elasticloadbalancing:ap-south-1:755417858364:targetgroup/EC2TargetGroup/975de1b2cfc20010
   VpcId:
     Description: VPC ID
     Type: AWS::EC2::VPC::Id
   VpcEc2Subnet1:
     Description: EC2 subnet 1(AZ-a)
     Type: AWS::EC2::Subnet::Id
+  VpcEc2Subnet2:
+    Description: EC2 subnet 1(AZ-a)
+    Type: AWS::EC2::Subnet::Id
   Ec2ImageId:
     Description: AMI ID
     Type: AWS::EC2::Image::Id
-    Default: Select your AMI ID from Here
+    Default: ami-063ca7d3a31b91bb8
   Ec2InstanceType:
     Description: EC2 InstanceType
     Type: String
@@ -61,18 +72,32 @@ Resources:
     Properties:
       VPCZoneIdentifier:
       - !Ref 'VpcEc2Subnet1'
+      - !Ref 'VpcEc2Subnet2'
       LaunchTemplate:
         LaunchTemplateId: !Ref 'Ec2InstanceLaunchTemplate'
         Version: !GetAtt 'Ec2InstanceLaunchTemplate.LatestVersionNumber'
       MinSize: !Ref 'Ec2AutoscaleMinSize'
       MaxSize: !Ref 'Ec2AutoscaleMaxSize'
       DesiredCapacity: !Ref 'Ec2AutoscaleDesiredCapacity'
-  Ec2SecurityGroupSSH:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      VpcId: !Ref 'VpcId'
-      GroupDescription: allow SSH
-      SecurityGroupIngress:
-      - IpProtocol: tcp
-        FromPort: 22
-        ToPort: 22
+      TargetGroupARNs:
+      - !Ref myALBTGArn
+  # Ec2SecurityGroupSSH:
+  #   Type: AWS::EC2::SecurityGroup
+  #   Properties:
+  #     VpcId: !Ref 'VpcId'
+  #     GroupDescription: allow SSH
+  #     SecurityGroupIngress:
+  #       - IpProtocol: tcp
+  #         FromPort: '80'
+  #         ToPort: '80'
+  #         SourceSecurityGroupId:
+  #           Ref: ELBSecurityGroup
+  #       - IpProtocol: tcp
+  #         FromPort: '443'
+  #         ToPort: '443'
+  #         SourceSecurityGroupId:
+  #           Ref: ELBSecurityGroup
+  #       - IpProtocol: tcp
+  #         FromPort: '22'
+  #         ToPort: '22'
+  #         CidrIp: 0.0.0.0/0
