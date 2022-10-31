@@ -63,7 +63,7 @@ Parameters:
     AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
     ConstraintDescription: must begin with a letter and contain only alphanumeric characters.
   DBPassword:
-    Default: 'shabeeb123'
+    Default: 'password123'
     NoEcho: 'true'
     Description: The WordPress database admin account password
     Type: String
@@ -72,7 +72,7 @@ Parameters:
     # AllowedPattern: '[a-zA-Z0-9]*'
     # ConstraintDescription: must contain only alphanumeric characters.
   DBRootPassword:
-    Default: 'shabeeb123'
+    Default: 'paswword123'
     NoEcho: 'true'
     Description: MySQL root password
     Type: String
